@@ -1,0 +1,9 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+
+html, body {
+  height: 100%;
+  /* 💡 告诉浏览器：这个容器不需要任何滚动回弹效果 */
+  overscroll-behavior-y: none;
+  overflow: hidden;
+}
