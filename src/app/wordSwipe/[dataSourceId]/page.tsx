@@ -48,12 +48,14 @@ export default function WordSwipePage({
   const MAX_CACHE_SIZE = 50
   const audioCacheRef = useRef<Map<string, string>>(new Map())
 
+  // 🌟 新增：用于记录滚轮节流的时间戳，防止 PC 滚轮高频触发导致卡片连续飞速切页
+  const lastWheelTimeRef = useRef(0)
+
   const fetchWordAllIds = useCallback(async () => {
     try {
       setIsLoading(true)
       setIds([])
       setWords([])
-      // 切换模式或重来时，清空音频缓存标记
       audioCacheRef.current.clear()
       const res = await NotionWordAllIdsClient(dataSourceId)
       if (res.code === 200) {
@@ -62,17 +64,13 @@ export default function WordSwipePage({
         if (!isOrder) {
           const shuffled = [...resIds]
           for (let i = shuffled.length - 1; i > 0; i--) {
-            // 生成一个 0 到 i 之间的随机索引
             const j = Math.floor(Math.random() * (i + 1))
-            // 交换元素
             ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
           }
           ids = shuffled
         }
         setIds(ids)
         if (ids && ids.length > 0) {
-          // 🚀 核心：使用 slice(start, end) 截取前 10 个 ID
-          // slice(0, 10) 会获取索引 0 到 9 的元素，刚好 10 个
           const nextIds = ids.slice(0, 10)
           const res = await NotionWordGetByIdsClient(nextIds)
           if (res.code === 200) {
@@ -110,10 +108,8 @@ export default function WordSwipePage({
       if (ids && ids.length > 0) {
         if (words.length > 0 && words.length < ids.length) {
           if (currentIndex >= words.length - 8 && !isPreloadingRef.current) {
-            isPreloadingRef.current = true // 🔒 上锁，阻止随后的连续触发
+            isPreloadingRef.current = true
             try {
-              // 🚀 核心：使用 slice(start, end) 截取前 10 个 ID
-              // slice(0, 10) 会获取索引 0 到 9 的元素，刚好 10 个
               const nextIds = ids.slice(words.length, words.length + 10)
               const res = await NotionWordGetByIdsClient(nextIds)
               if (res.code === 200) {
@@ -123,7 +119,7 @@ export default function WordSwipePage({
                 }
               }
             } finally {
-              isPreloadingRef.current = false // 🔓 开锁，允许下一次预加载
+              isPreloadingRef.current = false
             }
           }
         }
@@ -132,8 +128,7 @@ export default function WordSwipePage({
     void getWords()
   }, [ids, currentIndex, words.length])
 
-  // 🌟 核心新增：音频流自动预加载逻辑
-  // 当 currentIndex 变更或列表更新时，自动向后预加载接下来的 3 个单词的音频
+  // 音频流自动预加载逻辑
   useEffect(() => {
     if (words.length === 0) return
     const cache = audioCacheRef.current
@@ -145,24 +140,21 @@ export default function WordSwipePage({
         !audioCacheRef.current.has(nextWord.audio_url)
       ) {
         const url = nextWord.audio_url
-
-        // 先占位，防止重复 fetch
         audioCacheRef.current.set(url, 'loading')
 
         fetch(url)
           .then((res) => {
             if (!res.ok) throw new Error('Network response was not ok')
-            return res.blob() // 关键：转成二进制对象
+            return res.blob()
           })
           .then((blob) => {
-            const blobUrl = URL.createObjectURL(blob) // 创建本地内存链接
-            // 2. 如果超出了最大限制，淘汰掉最旧的那一个（Map 的第一个元素）
+            const blobUrl = URL.createObjectURL(blob)
             if (cache.size >= MAX_CACHE_SIZE) {
               const oldestKey = cache.keys().next().value
               if (oldestKey) {
                 const oldestUrl = cache.get(oldestKey)
                 if (oldestUrl?.startsWith('blob:')) {
-                  URL.revokeObjectURL(oldestUrl) // 💡 这一步至关重要！释放浏览器内存
+                  URL.revokeObjectURL(oldestUrl)
                 }
                 cache.delete(oldestKey)
                 console.log(`[Cache] 内存释放成功，淘汰了: ${oldestKey}`)
@@ -175,7 +167,7 @@ export default function WordSwipePage({
           })
           .catch((err) => {
             console.error(`预加载失败:`, err)
-            audioCacheRef.current.delete(url) // 失败了允许重试
+            audioCacheRef.current.delete(url)
           })
       }
     }
@@ -206,7 +198,6 @@ export default function WordSwipePage({
     (audio_url: string) => {
       if (!audio_url || !globalAudio) return
 
-      // 状态 1：如果正在播放相同的音频，则继续（或暂停，根据你的业务调)
       if (
         globalAudio.src === audio_url ||
         globalAudio.src === audioCacheRef.current.get(audio_url)
@@ -219,12 +210,11 @@ export default function WordSwipePage({
 
       activateAudioForIOS()
 
-      // 关键点：检查是否有预加载好的 Blob URL
       const cachedBlobUrl = audioCacheRef.current.get(audio_url)
       if (cachedBlobUrl && cachedBlobUrl !== 'loading') {
-        globalAudio.src = cachedBlobUrl // 直接读取内存，0网速延迟！
+        globalAudio.src = cachedBlobUrl
       } else {
-        globalAudio.src = audio_url // 降级：走网络请求
+        globalAudio.src = audio_url
       }
 
       globalAudio.load()
@@ -237,48 +227,104 @@ export default function WordSwipePage({
     void playAudio(currentWord?.audio_url)
   }, [currentWord, playAudio])
 
-  // 🌟 重新调校的原生滚动与强磁力补正逻辑
+  // 原生滚动（H5 手指滑动及系统默认横向滚动）与强磁力补正逻辑
   const handleScroll = () => {
     const container = scrollContainerRef.current
     if (!container || isInternalScrollRef.current) return
     const { scrollLeft, clientWidth } = container
     if (clientWidth === 0) return
 
-    // 1. 实时计算当前滑动到了第几张卡片（四舍五入）
     const newIndex = Math.round(scrollLeft / clientWidth)
     if (newIndex !== currentIndex && newIndex >= 0 && newIndex < words.length) {
       setCurrentIndex(newIndex)
     }
 
-    // 2. 🌟 核心防滑破防机制（处理滑到一半不动的情况）：
-    // 当用户手指抬起，滚动开始变慢直至快停止时，如果它正好卡在中间，
-    // 我们在 60ms 没有任何滚动事件后，人工强制触发一次 CSS 平滑磁吸对齐。
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
 
     scrollTimeoutRef.current = setTimeout(() => {
-      // 计算距离最近的一张卡片的标准对齐偏移量
       const targetScrollLeft = newIndex * clientWidth
 
-      // 如果发现当前卡在中间（误差超过 2 像素），手动推它一把
       if (Math.abs(container.scrollLeft - targetScrollLeft) > 2) {
         isInternalScrollRef.current = true
         container.scrollTo({
           left: targetScrollLeft,
-          behavior: 'smooth', // 启用平滑磁吸
+          behavior: 'smooth',
         })
 
-        // 动画结束后解锁
         setTimeout(() => {
           isInternalScrollRef.current = false
         }, 300)
       }
-    }, 600) // 60ms 内不再发生滚动，说明用户手已经放开且滚动静止
+    }, 150) // 缩短至 60ms 快速磁吸
   }
+
+  // 🌟 核心新增：PC 鼠标普通上下滚轮转换为左右翻页
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const handleWheel = (e: WheelEvent) => {
+      // 如果没有纵向滚动偏移量，或者是双向触控板自由滑动，不强制干预
+      if (e.deltaY === 0) return
+
+      // 阻止浏览器默认的纵向滚动行为
+      e.preventDefault()
+
+      // 限制触发频率（防抖/节流：500ms 内只允许切一页），防止普通鼠标滚轮一滚飞滑十几张卡片
+      const now = Date.now()
+      if (now - lastWheelTimeRef.current < 500) return
+
+      const { clientWidth } = container
+      if (clientWidth === 0) return
+
+      // 根据滚轮方向判断上一张还是下一张
+      let nextIndex = currentIndex
+      if (e.deltaY > 0) {
+        // 向下滚轮 -> 看下一张
+        nextIndex = Math.min(currentIndex + 1, words.length - 1)
+      } else {
+        // 向上滚轮 -> 看上一张
+        nextIndex = Math.max(currentIndex - 1, 0)
+      }
+
+      if (nextIndex !== currentIndex) {
+        lastWheelTimeRef.current = now
+        isInternalScrollRef.current = true
+        setCurrentIndex(nextIndex)
+
+        container.scrollTo({
+          left: nextIndex * clientWidth,
+          behavior: 'smooth',
+        })
+
+        setTimeout(() => {
+          isInternalScrollRef.current = false
+        }, 400) // 动画结束后解锁
+      }
+    }
+
+    // 必须通过原生 addEventListener 并设置 passive: false 才能有效执行 preventDefault()
+    container.addEventListener('wheel', handleWheel, { passive: false })
+    return () => {
+      container.removeEventListener('wheel', handleWheel)
+    }
+  }, [currentIndex, words.length])
+
   const getFontSizeClass = (wordLength: number) => {
-    if (wordLength > 15) return 'text-xl' // 超长单词 (如: incomprehensible)
-    if (wordLength > 10) return 'text-2xl' // 较长单词 (如: beautiful, individual)
-    if (wordLength > 7) return 'text-3xl' // 中等长度 (如: student)
-    return 'text-4xl' // 短单词
+    if (wordLength > 15) {
+      // 超长单词 (如: incomprehensible)
+      return 'text-xl md:text-6xl'
+    }
+    if (wordLength > 10) {
+      // 较长单词 (如: beautiful, individual)
+      return 'text-2xl md:text-6xl'
+    }
+    if (wordLength > 7) {
+      // 中等长度 (如: student)
+      return 'text-3xl md:text-6xl'
+    }
+    // 短单词
+    return 'text-4xl md:text-6xl'
   }
 
   if (isLoading && words.length === 0) {
@@ -290,20 +336,17 @@ export default function WordSwipePage({
   }
 
   return (
-    <div className="w-full h-full  mx-auto flex flex-col overflow-hidden">
-      {/* 🌟 卡片核心展示区：彻底去除任何 TS 不认识的 style 前缀属性 */}
+    <div className="w-full h-full mx-auto flex flex-col overflow-hidden">
+      {/* 卡片核心展示区 */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        // snap-x mandatory 声明横向磁吸对齐，no-scrollbar 隐藏原生的丑陋滚动条
         className="flex-1 flex flex-row overflow-x-auto overflow-y-hidden snap-x mandatory h-full w-full relative no-scrollbar"
         style={{
-          // 仅保留完全合规的 iOS 原生滚动回弹加速，绝不加任何非标准的连字符属性
           WebkitOverflowScrolling: 'touch',
           scrollSnapType: 'x mandatory',
-          scrollbarWidth: 'none', // Firefox 彻底隐藏
-          msOverflowStyle: 'none', // IE / Edge 彻底隐藏
-          // 针对 WebKit 内核（Chrome/Safari/iOS）的高级隐藏技巧
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
           ...({
             '&::webkitScrollbar': { display: 'none' },
           } as React.CSSProperties),
@@ -312,7 +355,6 @@ export default function WordSwipePage({
         {words.map((word, index) => (
           <div
             key={`${word.id}-${index}`}
-            // 层级 1：滑动视口轨道块（负责 snap 对齐和大小限制）
             className="w-full h-full shrink-0 snap-center snap-always px-4 pt-2 pb-3 box-border"
             style={{ contentVisibility: 'auto' }}
           >
@@ -322,46 +364,36 @@ export default function WordSwipePage({
               shadow-md active:shadow-inner active:scale-[0.98] transition-all duration-75 select-none"
             >
               <div className="w-full flex justify-end items-center pl-3 pr-3 pt-2"></div>
-              <div className="flex flex-1 items-center justify-center  pl-4 pr-4">
+              <div className="flex flex-1 w-full items-center justify-center pl-4 pr-4">
                 <div>
                   <div className="text-center pointer-events-none">
-                    {/* 1. 单词主体 */}
                     <p
                       className={`${getFontSizeClass(word.word?.length || 0)} font-bold text-warning tracking-wide break-words max-w-full transition-all duration-200`}
                     >
                       {word.word}
                     </p>
 
-                    {/* 2. 音标 */}
                     {word.phonetic && (
-                      <p className="text-sm font-medium text-neutral-400 mt-1.5 font-sans tracking-wide">
+                      <p className="text-sm md:text-lg font-medium text-neutral-400 mt-1.5 font-sans tracking-wide">
                         /{word.phonetic}/
                       </p>
                     )}
                   </div>
-                  {/* 3. 辅助记忆图（同层级：在 flex-col 作用下自动向下排布，不受上面文字包裹层干扰） */}
-                  {isShowImage && (
-                    <>
-                      {word.image_url && (
-                        <div className="w-full flex items-center justify-center p-2 mt-2 overflow-hidden shrink bg-gray-50 pointer-events-none">
-                          {/* eslint-disable-next-line @next/next/no-img-element */}
-                          <img
-                            src={word.image_url}
-                            alt="Mnemonics"
-                            decoding="async"
-                            loading={
-                              Math.abs(index - currentIndex) <= 1
-                                ? 'eager'
-                                : 'lazy'
-                            }
-                            className="object-cover rounded-lg"
-                          />
-                        </div>
-                      )}
-                    </>
+
+                  {isShowImage && word.image_url && (
+                    <div className="w-full flex items-center justify-center p-2 mt-2 overflow-hidden shrink bg-gray-50 pointer-events-none">
+                      <img
+                        src={word.image_url}
+                        alt="Mnemonics"
+                        decoding="async"
+                        loading={
+                          Math.abs(index - currentIndex) <= 1 ? 'eager' : 'lazy'
+                        }
+                        className="object-cover rounded-lg"
+                      />
+                    </div>
                   )}
 
-                  {/* 3. 翻译 */}
                   {word.definition && (
                     <div className="flex justify-center">
                       {word.pos && (
@@ -378,12 +410,15 @@ export default function WordSwipePage({
                       )}
                     </div>
                   )}
-                  {index == words.length - 1 && (
+                  {index === words.length - 1 && (
                     <div className="pt-6 pb-2 pl-10 pr-10 w-full">
                       <Button
                         size="lg"
                         fullWidth={true}
-                        onClick={() => doItAgain()}
+                        onClick={(e) => {
+                          e.stopPropagation() // 阻止触发卡片本身的点击音频事件
+                          void doItAgain()
+                        }}
                       >
                         <Zap className="text-amber-400 fill-amber-400" />
                         Let&#39;s Do It Again
@@ -415,31 +450,37 @@ export default function WordSwipePage({
               </>
             )}
           </Button>
-          <div className="ml-3 flex items-center justify-center">
+          <div className="ml-4 flex items-center justify-center">
             <button
               onClick={() => setIsOrder(!isOrder)}
-              className="text-blue-500 hover:text-blue-600 transition-colors focus:outline-none"
-              title={
-                isOrder ? '当前：正序（点击随机）' : '当前：随机（点击正序）'
-              } // 增强可访问性
+              className={`p-1 rounded transition-colors focus:outline-none ${
+                isOrder
+                  ? 'text-blue-600 hover:bg-blue-100'
+                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+              }`}
+              title={isOrder ? 'order' : 'shuffled'}
             >
               {isOrder ? (
-                <ArrowDownAZ className="h-4 w-4" /> // 正序图标（A-Z 顺序）
+                <ArrowDownAZ className="h-4 w-4" />
               ) : (
-                <Shuffle className="h-4 w-4" /> // 随机随机图标
+                <Shuffle className="h-4 w-4" />
               )}
             </button>
           </div>
-          <div className="ml-5 flex items-center justify-center">
+          <div className="ml-4 flex items-center justify-center">
             <button
               onClick={() => setIsShowImage(!isShowImage)}
-              className="text-blue-500 hover:text-blue-600 transition-colors focus:outline-none"
+              className={`p-1 rounded transition-colors focus:outline-none ${
+                isShowImage
+                  ? 'text-blue-600 hover:bg-blue-100'
+                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
+              }`}
               title={isShowImage ? 'hidden' : 'show'}
             >
               {isShowImage ? (
-                <Image className="h-4 w-4" /> // 显示状态
+                <Image className="h-4 w-4" />
               ) : (
-                <ImageOff className="h-4 w-4 text-gray-400" /> // 隐藏状态，变为灰色带斜线
+                <ImageOff className="h-4 w-4" />
               )}
             </button>
           </div>
@@ -448,17 +489,17 @@ export default function WordSwipePage({
               onClick={() => setIsShowDefinition(!isShowDefinition)}
               className={`p-1 rounded transition-colors focus:outline-none ${
                 isShowDefinition
-                  ? 'text-blue-600 hover:bg-blue-100' // 开启翻译：高亮蓝色加淡蓝背景
-                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100' // 关闭翻译：低调灰色
+                  ? 'text-blue-600 hover:bg-blue-100'
+                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
               }`}
-              title={isShowDefinition ? '隐藏翻译' : '显示翻译'}
+              title={isShowDefinition ? 'hidden' : 'show'}
             >
               <Languages className="h-4 w-4" />
             </button>
           </div>
         </div>
         <span className="text-xs text-default-400 font-medium">
-          {ids?.length || 0 > 0 ? currentIndex + 1 : 0} / {ids?.length}
+          {ids && ids.length > 0 ? currentIndex + 1 : 0} / {ids?.length || 0}
         </span>
       </div>
     </div>

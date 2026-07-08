@@ -6,7 +6,7 @@ import { House } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { WordType } from '@/src/types/WordTypes'
 import {
-  NotionWordAllIdsClient,
+  NotionWordAllIdsByImgClient,
   NotionWordGetByIdsClient,
 } from '@/src/client/WordClient'
 
@@ -105,7 +105,7 @@ export default function WordMatchPage({
         setIsLoading(true)
         // 1. 先获取所有的 IDs (内部直接调用客户端，不依赖外部 useCallback)
         setIds([])
-        const res = await NotionWordAllIdsClient(dataSourceId)
+        const res = await NotionWordAllIdsByImgClient(dataSourceId)
 
         if (res.code === 200) {
           const ids = res.data as string[]
@@ -251,7 +251,7 @@ export default function WordMatchPage({
                     playAudio(item.word.audio_url)
                   }}
                 >
-                  <p className="font-bold tracking-wide break-all text-center">
+                  <p className="font-bold tracking-wide break-all text-center md:text-3xl">
                     {item.word.word}
                   </p>
                 </div>

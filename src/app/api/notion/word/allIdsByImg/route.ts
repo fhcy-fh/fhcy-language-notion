@@ -49,6 +49,9 @@ export async function getWordIds(data_source_id: string) {
       }
       // 💡 4. 将查出来的最新数据塞入缓存，方便下次使用
       wordCache.set(page.id, cleanedWord)
+      if (!cleanedWord.image_url) {
+        return []
+      }
       return page.id
     })
 

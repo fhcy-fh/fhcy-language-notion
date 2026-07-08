@@ -32,8 +32,8 @@ export async function getInfo() {
   })
   const rawResponse = response as any
   const baseInfo = {
-    title: rawResponse?.title?.[0]?.plain_text || '',
-    description: rawResponse?.description?.[0]?.plain_text || '',
+    title: (rawResponse?.title?.[0]?.plain_text || '').trim(),
+    description: (rawResponse?.description?.[0]?.plain_text || '').trim(),
     icon: rawResponse?.icon?.custom_emoji?.url || '',
   } as BaseInfoType
   if (baseInfo.icon == '') {

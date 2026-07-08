@@ -31,10 +31,11 @@ export async function GET() {
       const props = page.properties
       return {
         id: page.id,
-        name:
+        name: (
           props.name?.title?.[0]?.plain_text ||
           props.name?.rich_text?.[0]?.plain_text ||
-          '',
+          ''
+        ).trim(),
         data_source_id: props.data_source_id?.rich_text?.[0]?.plain_text || '',
         description: props.description?.rich_text?.[0]?.plain_text || '',
         icon:

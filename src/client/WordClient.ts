@@ -10,10 +10,26 @@ export function NotionWordAllIdsClient(
   })
 }
 
+export function NotionWordAllIdsByImgClient(
+  data_source_id: string,
+): Promise<ApiResult<string[]>> {
+  return RequestUtils.get('/api/notion/word/allIdsByImg', {
+    data_source_id,
+  })
+}
+
 export function NotionWordGetByIdsClient(
   ids: string[],
 ): Promise<ApiResult<WordType[]>> {
   return RequestUtils.post('/api/notion/word/getByIds', {
     ids,
+  })
+}
+
+export function NotionWordGetByIdClient(
+  id: string,
+): Promise<ApiResult<WordType>> {
+  return RequestUtils.post('/api/notion/word/getById', {
+    id,
   })
 }

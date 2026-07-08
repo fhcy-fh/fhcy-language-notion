@@ -47,10 +47,11 @@ export async function POST(req: NextRequest) {
 
         const cleanedWord: WordType = {
           id: page.id,
-          word:
+          word: (
             props.word?.title?.[0]?.plain_text ||
             props.word?.rich_text?.[0]?.plain_text ||
-            '',
+            ''
+          ).trim(),
           pos: props.pos?.rich_text?.[0]?.plain_text || '',
           phonetic: props.phonetic?.rich_text?.[0]?.plain_text || '',
           definition: props.definition?.rich_text?.[0]?.plain_text || '',
