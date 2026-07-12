@@ -37,19 +37,28 @@ export default function WordSwipePage({
 
   const isPreloadingRef = useRef(false)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const isInternalScrollRef = useRef(false) // 避免状态反馈陷入死循环
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null) // 🌟 引入定时器做滚动结束判定
+  const isInternalScrollRef = useRef(false)
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   const currentWord = words[currentIndex]
-
   const [ids, setIds] = useState<string[]>()
 
-  // 🌟 缓存已创建的预加载音频对象，避免重复下载
   const MAX_CACHE_SIZE = 50
   const audioCacheRef = useRef<Map<string, string>>(new Map())
 
-  // 🌟 新增：用于记录滚轮节流的时间戳，防止 PC 滚轮高频触发导致卡片连续飞速切页
-  const lastWheelTimeRef = useRef(0)
+  // 动画状态锁
+  const isWheelAnimatingRef = useRef(false)
+
+  // 检测当前是否为 PC 端
+  const [isPc, setIsPc] = useState(false)
+  useEffect(() => {
+    const checkIsPc = () => {
+      setIsPc(window.innerWidth >= 768)
+    }
+    checkIsPc()
+    window.addEventListener('resize', checkIsPc)
+    return () => window.removeEventListener('resize', checkIsPc)
+  }, [])
 
   const fetchWordAllIds = useCallback(async () => {
     try {
@@ -86,23 +95,32 @@ export default function WordSwipePage({
     }
   }, [dataSourceId, isOrder])
 
-  // 初始化数据
   useEffect(() => {
+    let isMounted = true
     const initWordIds = async () => {
-      await fetchWordAllIds()
+      if (isMounted) {
+        void fetchWordAllIds()
+      }
     }
     void initWordIds()
+    return () => {
+      isMounted = false
+    }
   }, [fetchWordAllIds])
 
   const doItAgain = async () => {
     if (scrollContainerRef.current) {
-      scrollContainerRef.current.scrollLeft = 0
+      if (isPc) {
+        scrollContainerRef.current.scrollTop = 0
+      } else {
+        scrollContainerRef.current.scrollLeft = 0
+      }
     }
     setCurrentIndex(0)
     await fetchWordAllIds()
   }
 
-  // 预加载
+  // 预加载逻辑
   useEffect(() => {
     const getWords = async () => {
       if (ids && ids.length > 0) {
@@ -128,7 +146,7 @@ export default function WordSwipePage({
     void getWords()
   }, [ids, currentIndex, words.length])
 
-  // 音频流自动预加载逻辑
+  // 音频流自动预加载
   useEffect(() => {
     if (words.length === 0) return
     const cache = audioCacheRef.current
@@ -157,13 +175,9 @@ export default function WordSwipePage({
                   URL.revokeObjectURL(oldestUrl)
                 }
                 cache.delete(oldestKey)
-                console.log(`[Cache] 内存释放成功，淘汰了: ${oldestKey}`)
               }
             }
             audioCacheRef.current.set(url, blobUrl)
-            console.log(
-              `[Preload Success] ${nextWord.word} 已转为本地 Blob URL`,
-            )
           })
           .catch((err) => {
             console.error(`预加载失败:`, err)
@@ -173,14 +187,12 @@ export default function WordSwipePage({
     }
   }, [currentIndex, words])
 
-  // 组件销毁时清理定时器
   useEffect(() => {
     return () => {
       if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
     }
   }, [])
 
-  // 记录音频是否已经被 iOS 激活过
   const playAudioIsActivated = useRef(false)
   const activateAudioForIOS = useCallback(() => {
     if (playAudioIsActivated.current || !globalAudio) return
@@ -227,103 +239,127 @@ export default function WordSwipePage({
     void playAudio(currentWord?.audio_url)
   }, [currentWord, playAudio])
 
-  // 原生滚动（H5 手指滑动及系统默认横向滚动）与强磁力补正逻辑
+  // 原生滚动与磁力补正逻辑
   const handleScroll = () => {
     const container = scrollContainerRef.current
     if (!container || isInternalScrollRef.current) return
-    const { scrollLeft, clientWidth } = container
-    if (clientWidth === 0) return
 
-    const newIndex = Math.round(scrollLeft / clientWidth)
-    if (newIndex !== currentIndex && newIndex >= 0 && newIndex < words.length) {
-      setCurrentIndex(newIndex)
-    }
+    // 🌟 核心改进 1：如果正在进行滚轮切换动画，PC端直接无视原生滚动回调，杜绝数据错位
+    if (isPc && isWheelAnimatingRef.current) return
 
-    if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
+    const { scrollLeft, scrollTop, clientWidth, clientHeight } = container
 
-    scrollTimeoutRef.current = setTimeout(() => {
-      const targetScrollLeft = newIndex * clientWidth
-
-      if (Math.abs(container.scrollLeft - targetScrollLeft) > 2) {
-        isInternalScrollRef.current = true
-        container.scrollTo({
-          left: targetScrollLeft,
-          behavior: 'smooth',
-        })
-
-        setTimeout(() => {
-          isInternalScrollRef.current = false
-        }, 300)
+    if (isPc) {
+      if (clientHeight === 0) return
+      const newIndex = Math.round(scrollTop / clientHeight)
+      if (
+        newIndex !== currentIndex &&
+        newIndex >= 0 &&
+        newIndex < words.length
+      ) {
+        setCurrentIndex(newIndex)
       }
-    }, 150) // 缩短至 60ms 快速磁吸
+
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
+
+      scrollTimeoutRef.current = setTimeout(() => {
+        // 二次防御验证，防止定时器触发时正好碰到滚轮正在操作
+        if (isWheelAnimatingRef.current) return
+
+        const targetScrollTop = newIndex * clientHeight
+        if (Math.abs(container.scrollTop - targetScrollTop) > 2) {
+          isInternalScrollRef.current = true
+          container.scrollTo({
+            top: targetScrollTop,
+            behavior: 'smooth',
+          })
+          setTimeout(() => {
+            isInternalScrollRef.current = false
+          }, 300)
+        }
+      }, 150)
+    } else {
+      // H5 端：保持原有的横向计算
+      if (clientWidth === 0) return
+      const newIndex = Math.round(scrollLeft / clientWidth)
+      if (
+        newIndex !== currentIndex &&
+        newIndex >= 0 &&
+        newIndex < words.length
+      ) {
+        setCurrentIndex(newIndex)
+      }
+
+      if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current)
+
+      scrollTimeoutRef.current = setTimeout(() => {
+        const targetScrollLeft = newIndex * clientWidth
+        if (Math.abs(container.scrollLeft - targetScrollLeft) > 2) {
+          isInternalScrollRef.current = true
+          container.scrollTo({
+            left: targetScrollLeft,
+            behavior: 'smooth',
+          })
+          setTimeout(() => {
+            isInternalScrollRef.current = false
+          }, 300)
+        }
+      }, 150)
+    }
   }
 
-  // 🌟 核心新增：PC 鼠标普通上下滚轮转换为左右翻页
+  // PC 端鼠标滚轮上下滑动逻辑精准控制
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
 
     const handleWheel = (e: WheelEvent) => {
-      // 如果没有纵向滚动偏移量，或者是双向触控板自由滑动，不强制干预
       if (e.deltaY === 0) return
 
-      // 阻止浏览器默认的纵向滚动行为
-      e.preventDefault()
+      e.preventDefault() // 彻底拦截浏览器默认的纵向滚动与惯性
+      if (isWheelAnimatingRef.current) return
 
-      // 限制触发频率（防抖/节流：500ms 内只允许切一页），防止普通鼠标滚轮一滚飞滑十几张卡片
-      const now = Date.now()
-      if (now - lastWheelTimeRef.current < 500) return
+      const { clientHeight } = container
+      if (clientHeight === 0) return
 
-      const { clientWidth } = container
-      if (clientWidth === 0) return
-
-      // 根据滚轮方向判断上一张还是下一张
       let nextIndex = currentIndex
       if (e.deltaY > 0) {
-        // 向下滚轮 -> 看下一张
         nextIndex = Math.min(currentIndex + 1, words.length - 1)
       } else {
-        // 向上滚轮 -> 看上一张
         nextIndex = Math.max(currentIndex - 1, 0)
       }
 
       if (nextIndex !== currentIndex) {
-        lastWheelTimeRef.current = now
+        isWheelAnimatingRef.current = true
         isInternalScrollRef.current = true
         setCurrentIndex(nextIndex)
 
         container.scrollTo({
-          left: nextIndex * clientWidth,
+          top: nextIndex * clientHeight,
           behavior: 'smooth',
         })
 
+        // 这里的延迟时间延长至 500ms，确保平滑滚动过渡彻底静止、清空所有宏任务后再开锁
         setTimeout(() => {
+          isWheelAnimatingRef.current = false
           isInternalScrollRef.current = false
-        }, 400) // 动画结束后解锁
+        }, 500)
       }
     }
 
-    // 必须通过原生 addEventListener 并设置 passive: false 才能有效执行 preventDefault()
-    container.addEventListener('wheel', handleWheel, { passive: false })
+    if (isPc) {
+      container.addEventListener('wheel', handleWheel, { passive: false })
+    }
+
     return () => {
       container.removeEventListener('wheel', handleWheel)
     }
-  }, [currentIndex, words.length])
+  }, [currentIndex, words.length, isPc])
 
   const getFontSizeClass = (wordLength: number) => {
-    if (wordLength > 15) {
-      // 超长单词 (如: incomprehensible)
-      return 'text-xl md:text-6xl'
-    }
-    if (wordLength > 10) {
-      // 较长单词 (如: beautiful, individual)
-      return 'text-2xl md:text-6xl'
-    }
-    if (wordLength > 7) {
-      // 中等长度 (如: student)
-      return 'text-3xl md:text-6xl'
-    }
-    // 短单词
+    if (wordLength > 15) return 'text-xl md:text-6xl'
+    if (wordLength > 10) return 'text-2xl md:text-6xl'
+    if (wordLength > 7) return 'text-3xl md:text-6xl'
     return 'text-4xl md:text-6xl'
   }
 
@@ -337,14 +373,18 @@ export default function WordSwipePage({
 
   return (
     <div className="w-full h-full mx-auto flex flex-col overflow-hidden">
-      {/* 卡片核心展示区 */}
+      {/* 🌟 核心改进 2：在样式上，PC 端彻底去掉 snap-y 与 snap-mandatory，防止原生吸附与滚动冲突 */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 flex flex-row overflow-x-auto overflow-y-hidden snap-x mandatory h-full w-full relative no-scrollbar"
+        className={`flex-1 flex h-full w-full relative no-scrollbar ${
+          isPc
+            ? 'flex-col overflow-y-auto overflow-x-hidden'
+            : 'flex-row overflow-x-auto overflow-y-hidden snap-x snap-mandatory'
+        }`}
         style={{
           WebkitOverflowScrolling: 'touch',
-          scrollSnapType: 'x mandatory',
+          scrollSnapType: isPc ? 'none' : 'x mandatory', // PC 端关闭 CSS 级别的磁吸机制
           scrollbarWidth: 'none',
           msOverflowStyle: 'none',
           ...({
@@ -355,7 +395,9 @@ export default function WordSwipePage({
         {words.map((word, index) => (
           <div
             key={`${word.id}-${index}`}
-            className="w-full h-full shrink-0 snap-center snap-always px-4 pt-2 pb-3 box-border"
+            className={`w-full h-full shrink-0 px-4 pt-2 pb-3 box-border ${
+              isPc ? '' : 'snap-center snap-always'
+            }`}
             style={{ contentVisibility: 'auto' }}
           >
             <div
@@ -416,7 +458,7 @@ export default function WordSwipePage({
                         size="lg"
                         fullWidth={true}
                         onClick={(e) => {
-                          e.stopPropagation() // 阻止触发卡片本身的点击音频事件
+                          e.stopPropagation()
                           void doItAgain()
                         }}
                       >
@@ -431,6 +473,7 @@ export default function WordSwipePage({
           </div>
         ))}
       </div>
+
       {/* 底部固定进度 */}
       <div className="pt-1 pb-1 pl-4 pr-6 flex items-center justify-between shrink-0 border-t border-gray-100  ">
         <div className="flex flex-1 items-center justify-start">
