@@ -10,7 +10,7 @@ import {
 import { InitWordType, WordType } from '@/src/types/WordTypes'
 import {
   House,
-  Image,
+  Image as ImageIcon,
   ImageOff,
   Keyboard,
   KeyboardOff,
@@ -49,6 +49,8 @@ export default function LetterFillPage({
 
   const MAX_CACHE_SIZE = 10
   const audioCacheRef = useRef<Map<string, string>>(new Map())
+  // 图片预加载缓存容器
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
 
   // 自动聚焦到当前最新需要填写的输入框
   const focusActiveInput = useCallback(() => {
@@ -71,6 +73,7 @@ export default function LetterFillPage({
   // 获取所有单词 ID
   useEffect(() => {
     audioCacheRef.current.clear()
+    imageCacheRef.current.clear()
     const fetchWordAllIds = async () => {
       try {
         setIsLoading(true)
@@ -172,6 +175,33 @@ export default function LetterFillPage({
         })
     }
   }, [nextWord])
+
+  // 图片预加载逻辑
+  useEffect(() => {
+    const preloadImage = (url?: string) => {
+      if (!url || imageCacheRef.current.has(url)) return
+
+      const img = new window.Image()
+      img.src = url
+      imageCacheRef.current.set(url, img)
+
+      // 超过缓存容量时清理最旧的记录
+      if (imageCacheRef.current.size > MAX_CACHE_SIZE) {
+        const oldestKey = imageCacheRef.current.keys().next().value
+        if (oldestKey) {
+          imageCacheRef.current.delete(oldestKey)
+        }
+      }
+    }
+
+    // 预加载下一个单词和当前单词的图片
+    if (nextWord?.image_url) {
+      preloadImage(nextWord.image_url)
+    }
+    if (currentWord?.image_url) {
+      preloadImage(currentWord.image_url)
+    }
+  }, [nextWord, currentWord])
 
   const playAudioIsActivated = useRef(false)
   const activateAudioForIOS = useCallback(() => {
@@ -360,7 +390,7 @@ export default function LetterFillPage({
               </div>
             )}
 
-            <div className="w-full mx-auto pt-6 pb-6 pl-64 pr-64  flex flex-wrap gap-3 justify-center items-center select-none">
+            <div className="w-full mx-auto pt-6 pb-6 pl-64 pr-64 flex flex-wrap gap-3 justify-center items-center select-none">
               {activeWordStr.split('').map((char, idx) => {
                 const charIsLetter = isLetter(char)
 
@@ -425,7 +455,7 @@ export default function LetterFillPage({
       </div>
 
       {/* 底部固定进度 */}
-      <div className="h-14 pt-1 pb-1 pl-4 pr-6 flex items-center justify-start shrink-0 border-t border-gray-100  ">
+      <div className="h-14 pt-1 pb-1 pl-4 pr-6 flex items-center justify-start shrink-0 border-t border-gray-100 ">
         <Button
           size="lg"
           isIconOnly
@@ -474,7 +504,7 @@ export default function LetterFillPage({
             title={isShowImage ? 'hidden' : 'show'}
           >
             {isShowImage ? (
-              <Image className="h-4 w-4" />
+              <ImageIcon className="h-4 w-4" />
             ) : (
               <ImageOff className="h-4 w-4" />
             )}

@@ -496,11 +496,7 @@ export default function WordSwipePage({
           <div className="ml-4 flex items-center justify-center">
             <button
               onClick={() => setIsOrder(!isOrder)}
-              className={`p-1 rounded transition-colors focus:outline-none ${
-                isOrder
-                  ? 'text-blue-600 hover:bg-blue-100'
-                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'
-              }`}
+              className={`p-1 rounded transition-colors focus:outline-none text-blue-600 hover:bg-blue-100`}
               title={isOrder ? 'order' : 'shuffled'}
             >
               {isOrder ? (

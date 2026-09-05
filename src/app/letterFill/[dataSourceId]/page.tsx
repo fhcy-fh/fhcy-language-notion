@@ -49,9 +49,12 @@ export default function LetterFillPage({
 
   const MAX_CACHE_SIZE = 10
   const audioCacheRef = useRef<Map<string, string>>(new Map())
+  // 图片预加载缓存容器
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
 
   useEffect(() => {
     audioCacheRef.current.clear()
+    imageCacheRef.current.clear()
     const fetchWordAllIds = async () => {
       try {
         setIsLoading(true)
@@ -126,6 +129,7 @@ export default function LetterFillPage({
     void getWords()
   }, [currentIndex, ids])
 
+  // 音频预加载逻辑
   useEffect(() => {
     const cache = audioCacheRef.current
     if (nextWord?.audio_url && !audioCacheRef.current.has(nextWord.audio_url)) {
@@ -157,6 +161,33 @@ export default function LetterFillPage({
         })
     }
   }, [nextWord])
+
+  // 图片预加载逻辑
+  useEffect(() => {
+    const preloadImage = (url?: string) => {
+      if (!url || imageCacheRef.current.has(url)) return
+
+      const img = new window.Image()
+      img.src = url
+      imageCacheRef.current.set(url, img)
+
+      // 超过缓存容量时清理最旧的记录
+      if (imageCacheRef.current.size > MAX_CACHE_SIZE) {
+        const oldestKey = imageCacheRef.current.keys().next().value
+        if (oldestKey) {
+          imageCacheRef.current.delete(oldestKey)
+        }
+      }
+    }
+
+    // 预加载下一个单词和当前单词的图片
+    if (nextWord?.image_url) {
+      preloadImage(nextWord.image_url)
+    }
+    if (currentWord?.image_url) {
+      preloadImage(currentWord.image_url)
+    }
+  }, [nextWord, currentWord])
 
   const playAudioIsActivated = useRef(false)
   const activateAudioForIOS = useCallback(() => {
@@ -238,13 +269,11 @@ export default function LetterFillPage({
     <div className="w-full h-full  mx-auto flex flex-col overflow-hidden">
       <div className="w-full flex flex-1 flex-col shrink-0 snap-center snap-always px-4 pt-2 pb-3 box-border">
         <div
-          // className="w-full h-full flex flex-col items-center justify-center bg-gray-50 border border-gray-100 rounded-2xl overflow-hidden
-          //     shadow-md  duration-75 select-none pb-4 overflow-y-auto min-h-0"
-          className="w-full flex flex-1 flex-col shrink-0 snap-center snap-always px-4 pt-2 pb-3bg-gray-50 border shadow-md duration-75 select-none  border-gray-100  box-border min-h-0 overflow-y-auto rounded-2xl overflow-hidden"
+          className="w-full flex flex-1 flex-col shrink-0 snap-center snap-always px-4 pt-2 pb-3 bg-gray-50 border shadow-md duration-75 select-none  border-gray-100  box-border min-h-0 overflow-y-auto rounded-2xl overflow-hidden"
           onClick={() => playAudio(currentWord.audio_url)}
         >
           <div className="flex-1 flex flex-col items-center justify-center pb-4">
-            {/* 3. 辅助记忆图（同层级：在 flex-col 作用下自动向下排布，不受上面文字包裹层干扰） */}
+            {/* 3. 辅助记忆图 */}
             {isShowImage && (
               <>
                 {currentWord.image_url && (
@@ -307,24 +336,18 @@ export default function LetterFillPage({
           </div>
 
           <div className="w-full max-w-2xl mx-auto p-4">
-            {' '}
-            {/* 限制最大宽度并居中 */}
             <div className="grid grid-cols-2 gap-3.5 w-full">
               {options.map((option, idx) => {
                 const isOptionCorrect = option === correctAnswer
 
-                // 1. 基础样式：手机端高度和字号适中
-                // 2. 响应式样式：md:h-16 md:text-xl 确保在 PC 端不会大得太夸张
                 let btnClasses =
                   'h-14 text-lg md:h-16 md:text-xl font-bold font-mono transition-all duration-200 rounded-2xl bg-white border border-zinc-100 shadow-[0_2px_8px_rgba(0,0,0,0.01)] hover:bg-zinc-50 active:scale-[0.98]'
 
                 if (selectedOption !== null) {
                   if (isOptionCorrect) {
-                    // 正确答案：转为环保绿
                     btnClasses =
                       'h-14 text-lg md:h-16 md:text-xl font-bold font-mono transition-all rounded-2xl bg-emerald-50 text-emerald-600 border-0 pointer-events-none shadow-none duration-300'
                   } else {
-                    // 其他所有选项：全部变透明隐去，且不可点击
                     btnClasses =
                       'h-14 text-lg md:h-16 md:text-xl font-bold font-mono transition-all rounded-2xl opacity-0 pointer-events-none shadow-none duration-300'
                   }
@@ -373,16 +396,15 @@ export default function LetterFillPage({
             title={isShowImage ? 'hidden' : 'show'}
           >
             {isShowImage ? (
-              <Image className="h-4 w-4" /> // 显示状态
+              <Image className="h-4 w-4" />
             ) : (
-              <ImageOff className="h-4 w-4 text-gray-400" /> // 隐藏状态，变为灰色带斜线
+              <ImageOff className="h-4 w-4 text-gray-400" />
             )}
           </button>
         </div>
         <div className="ml-4 flex items-center justify-center">
           <button
             onClick={() => setIsShowDefinition(!isShowDefinition)}
-
             className={`p-1 rounded transition-colors focus:outline-none ${
               isShowDefinition
                 ? 'text-blue-600 hover:bg-blue-100'

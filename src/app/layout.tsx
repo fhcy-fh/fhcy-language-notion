@@ -37,6 +37,13 @@ export async function generateMetadata(): Promise<Metadata> {
     description: baseInfo?.description || '',
     icons: {
       icon: finalIcon || '/favicon.ico',
+      apple: [
+        {
+          url: finalIcon || '/fhcy.png',
+          sizes: '180x180',
+          type: 'image/png',
+        },
+      ],
     },
   }
 }
