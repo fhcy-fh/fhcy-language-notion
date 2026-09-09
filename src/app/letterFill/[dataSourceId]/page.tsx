@@ -8,7 +8,14 @@ import {
   NotionWordGetByIdClient,
 } from '@/src/client/WordClient'
 import { InitWordType, WordType } from '@/src/types/WordTypes'
-import { House, Image, ImageOff, Languages } from 'lucide-react'
+import {
+  House,
+  Image,
+  ImageOff,
+  Languages,
+  RotateCcw,
+  Trophy,
+} from 'lucide-react'
 
 const globalAudio = typeof window !== 'undefined' ? new Audio() : null
 
@@ -47,37 +54,49 @@ export default function LetterFillPage({
   const [selectedOption, setSelectedOption] = useState<string | null>(null)
   const [isCorrect, setIsCorrect] = useState<boolean | null>(null)
 
+  // 完成提示弹窗状态
+  const [isCompletedModalOpen, setIsCompletedModalOpen] = useState(false)
+
   const MAX_CACHE_SIZE = 10
   const audioCacheRef = useRef<Map<string, string>>(new Map())
   // 图片预加载缓存容器
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map())
 
+  // 获取并打乱单词 ID
+  const fetchWordAllIds = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      setIsCompletedModalOpen(false)
+      setIds([])
+      setCurrentIndex(0)
+      const res = await NotionWordAllIdsClient(dataSourceId)
+      if (res.code === 200) {
+        const resIds = res.data as string[]
+        const shuffled = [...resIds]
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+        }
+        setIds(shuffled)
+      }
+    } catch (error) {
+      console.log('error: ' + error)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [dataSourceId])
+
   useEffect(() => {
     audioCacheRef.current.clear()
     imageCacheRef.current.clear()
-    const fetchWordAllIds = async () => {
-      try {
-        setIsLoading(true)
-        setIds([])
-        setCurrentIndex(0)
-        const res = await NotionWordAllIdsClient(dataSourceId)
-        if (res.code === 200) {
-          const resIds = res.data as string[]
-          const shuffled = [...resIds]
-          for (let i = shuffled.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1))
-            ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
-          }
-          setIds(shuffled)
-        }
-      } catch (error) {
-        console.log('error: ' + error)
-      } finally {
-        setIsLoading(false)
-      }
+
+    const loadData = async () => {
+      // 异步等待一小步，避免在 Effect 调用的第一帧进行同步 setState 造成级联渲染
+      await Promise.resolve()
+      await fetchWordAllIds()
     }
-    void fetchWordAllIds()
-  }, [dataSourceId])
+    void loadData()
+  }, [fetchWordAllIds])
 
   useEffect(() => {
     const getWords = async () => {
@@ -246,15 +265,22 @@ export default function LetterFillPage({
       if (ids && currentIndex < ids.length - 1) {
         setCurrentIndex((prev) => prev + 1)
       } else {
-        alert('恭喜你，完成了所有单词！')
+        // 完成所有单词，打开提示框
+        setIsCompletedModalOpen(true)
       }
     }, 1500)
   }
+
+  // 重新开始游戏
+  const handleRestart = () => {
+    void fetchWordAllIds()
+  }
+
   const getFontSizeClass = (wordLength: number) => {
-    if (wordLength > 15) return 'text-xl' // 超长单词 (如: incomprehensible)
-    if (wordLength > 10) return 'text-2xl' // 较长单词 (如: beautiful, individual)
-    if (wordLength > 7) return 'text-3xl' // 中等长度 (如: student)
-    return 'text-4xl' // 短单词
+    if (wordLength > 15) return 'text-xl'
+    if (wordLength > 10) return 'text-2xl'
+    if (wordLength > 7) return 'text-3xl'
+    return 'text-4xl'
   }
 
   if (isLoading) {
@@ -266,7 +292,7 @@ export default function LetterFillPage({
   }
 
   return (
-    <div className="w-full h-full  mx-auto flex flex-col overflow-hidden">
+    <div className="w-full h-full relative mx-auto flex flex-col overflow-hidden">
       <div className="w-full flex flex-1 flex-col shrink-0 snap-center snap-always px-4 pt-2 pb-3 box-border">
         <div
           className="w-full flex flex-1 flex-col shrink-0 snap-center snap-always px-4 pt-2 pb-3 bg-gray-50 border shadow-md duration-75 select-none  border-gray-100  box-border min-h-0 overflow-y-auto rounded-2xl overflow-hidden"
@@ -416,6 +442,45 @@ export default function LetterFillPage({
           </button>
         </div>
       </div>
+
+      {/* 完成提示自定义弹窗 */}
+      {isCompletedModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in duration-200 p-4">
+          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-sm w-full text-center shadow-xl flex flex-col items-center">
+            <div className="w-16 h-16 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mb-4">
+              <Trophy className="w-8 h-8" />
+            </div>
+
+            <h3 className="text-2xl font-bold text-gray-800 mb-2">
+              Great Job! 🎉
+            </h3>
+            <p className="text-gray-500 text-sm mb-6">
+              Congratulations! You&apos;ve completed all the words!
+            </p>
+
+            <div className="flex flex-col gap-3 w-full">
+              <Button
+                size="lg"
+                className="w-full font-semibold shadow-md flex items-center justify-center gap-2"
+                onClick={handleRestart}
+              >
+                <RotateCcw className="w-5 h-5" />
+                Let&apos;s Do It Again
+              </Button>
+              <Button
+                size="lg"
+                className="w-full text-gray-500 font-medium"
+                onClick={() => {
+                  setIsLoading(true)
+                  router.push('/')
+                }}
+              >
+                Back to Home
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
