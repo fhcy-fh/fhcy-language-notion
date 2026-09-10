@@ -17,6 +17,7 @@ interface WordMatchItem {
 }
 
 const globalAudio = typeof window !== 'undefined' ? new Audio() : null
+
 export default function WordMatchPage({
   params,
 }: {
@@ -39,7 +40,25 @@ export default function WordMatchPage({
   // 🎯 消除游戏互动状态
   const [selectedCard, setSelectedCard] = useState<WordMatchItem | null>(null)
   const [matchedIds, setMatchedIds] = useState<Set<string>>(new Set())
+  const [correctKeys, setCorrectKeys] = useState<Set<string>>(new Set()) // 🌟 新增：记录处于“选对高亮”状态的卡片Key
   const [errorKeys, setErrorKeys] = useState<Set<string>>(new Set()) // 用于记录当前震动闪红的卡片键
+
+  // 音频缓存池，用于预加载
+  const audioCache = useRef<Map<string, HTMLAudioElement>>(new Map())
+
+  // 🎵 预加载音频函数
+  const preloadAudios = useCallback((items: WordMatchItem[]) => {
+    if (typeof window === 'undefined') return
+    items.forEach((item) => {
+      const url = item.word?.audio_url
+      if (url && !audioCache.current.has(url)) {
+        const audio = new Audio()
+        audio.preload = 'auto'
+        audio.src = url
+        audioCache.current.set(url, audio)
+      }
+    })
+  }, [])
 
   // 数据包装器
   const toWordMatchItem = (wordList: WordType[]): WordMatchItem[] => {
@@ -72,10 +91,12 @@ export default function WordMatchPage({
       const nextIds = shuffled.slice(0, limitCount)
       const res = await NotionWordGetByIdsClient(nextIds)
       if (res.code === 200) {
-        setNextWords(toWordMatchItem(res.data || []))
+        const items = toWordMatchItem(res.data || [])
+        setNextWords(items)
+        preloadAudios(items) // 🌟 预加载下一轮音频
       }
     },
-    [limitCount],
+    [limitCount, preloadAudios],
   )
 
   // 获取下一轮数据并缓存
@@ -93,17 +114,18 @@ export default function WordMatchPage({
       const nextIds = shuffled.slice(0, limitCount)
       const res = await NotionWordGetByIdsClient(nextIds)
       if (res.code === 200) {
-        setCurrentWords(toWordMatchItem(res.data || []))
+        const items = toWordMatchItem(res.data || [])
+        setCurrentWords(items)
+        preloadAudios(items) // 🌟 预加载当前轮音频
       }
     },
-    [limitCount],
+    [limitCount, preloadAudios],
   )
 
   useEffect(() => {
     const initGameData = async () => {
       try {
         setIsLoading(true)
-        // 1. 先获取所有的 IDs (内部直接调用客户端，不依赖外部 useCallback)
         setIds([])
         const res = await NotionWordAllIdsByImgClient(dataSourceId)
 
@@ -111,8 +133,6 @@ export default function WordMatchPage({
           const ids = res.data as string[]
           setIds(ids)
 
-          // 2. 拿到最新数据后，再紧接着获取当前轮和下一轮的数据
-          // 注意：这里确保 fetchCurrentWords 内部使用的是刚拿到的 ids，而不是旧的 state
           await fetchCurrentWords(ids)
           await fetchNextWords(ids)
         }
@@ -129,9 +149,10 @@ export default function WordMatchPage({
   const handleCardClick = (item: WordMatchItem) => {
     const itemKey = item.id + item.type
 
-    // 拦截：如果是已消除的，或者正在做错误动画的，或者重复点击已经选中的，直接返回
+    // 拦截：如果是已消除的、处于绿色正确态的、处于错误动画的、或重复点击已选中的，直接返回
     if (
       matchedIds.has(item.id) ||
+      correctKeys.has(itemKey) ||
       errorKeys.has(itemKey) ||
       selectedCard === item
     ) {
@@ -151,24 +172,43 @@ export default function WordMatchPage({
     }
 
     // 3. 此时说明选中了一个单词和一个图片，开始进行匹配判定
-    if (selectedCard.id === item.id) {
-      // ✅ 配对成功
-      const newMatched = new Set(matchedIds)
-      newMatched.add(item.id)
-      setMatchedIds(newMatched)
-      setSelectedCard(null) // 清空选择框
+    const selectedKey = selectedCard.id + selectedCard.type
 
-      if (newMatched.size === currentWords.length / 2) {
-        setTimeout(() => {
-          setCurrentWords(nextWords)
-          setMatchedIds(new Set())
-          setSelectedCard(null)
-          void fetchNextWords(ids || [])
-        }, 400) // 延迟 400ms 让用户看清最后一次成功消除
-      }
+    if (selectedCard.id === item.id) {
+      // ✅ 配对成功：先置入正确高亮集合，展示配对成功的视觉效果
+      const matchedId = item.id
+      setCorrectKeys(new Set([selectedKey, itemKey]))
+      setSelectedCard(null) // 清空选中态
+
+      // 🌟 延迟 450ms 后再消失卡片
+      setTimeout(() => {
+        setMatchedIds((prev) => {
+          const newMatched = new Set(prev)
+          newMatched.add(matchedId)
+
+          // 检测是否本关全部消除
+          if (newMatched.size === currentWords.length / 2) {
+            setTimeout(() => {
+              setCurrentWords(nextWords)
+              setMatchedIds(new Set())
+              setSelectedCard(null)
+              void fetchNextWords(ids || [])
+            }, 200)
+          }
+          return newMatched
+        })
+
+        // 清除正确高亮状态
+        setCorrectKeys((prev) => {
+          const newKeys = new Set(prev)
+          newKeys.delete(selectedKey)
+          newKeys.delete(itemKey)
+          return newKeys
+        })
+      }, 450)
     } else {
-      const currentSelectedKey = selectedCard.id + selectedCard.type
-      setErrorKeys(new Set([currentSelectedKey, itemKey]))
+      // ❌ 配对失败
+      setErrorKeys(new Set([selectedKey, itemKey]))
       setSelectedCard(null) // 立即释放选择锁定
 
       // 动画结束后，清除错误标记以恢复常态
@@ -177,6 +217,7 @@ export default function WordMatchPage({
       }, 500)
     }
   }
+
   // 记录音频是否已经被 iOS 激活过
   const playAudioIsActivated = useRef(false)
   const activateAudioForIOS = useCallback(() => {
@@ -194,12 +235,10 @@ export default function WordMatchPage({
   const playAudio = useCallback(
     (audio_url: string) => {
       if (!audio_url || !globalAudio) return
-      // 如果是同一个音频，且正在播放，再次点击则暂停
       if (globalAudio.src === audio_url && !globalAudio.paused) {
         globalAudio.play().catch(() => {})
         return
       }
-      // 如果是同一个音频
       if (globalAudio.src === audio_url) {
         globalAudio.play().catch(() => {})
         return
@@ -221,13 +260,13 @@ export default function WordMatchPage({
   }
 
   return (
-    /* 🌟 核心：最外层必须是 flex flex-col 且高度满屏，这样内部的 flex-1 才能把高度平分铺满 */
-    <div className="w-full h-full  mx-auto bg-neutral-50 flex flex-col overflow-hidden">
-      {/* 🎮 游戏网格区：保留你的 grid-cols-2 和 grid-rows-5，配合 flex-1 */}
+    <div className="w-full h-full mx-auto bg-neutral-50 flex flex-col overflow-hidden">
+      {/* 🎮 游戏网格区 */}
       <div className="grid grid-cols-2 md:grid-cols-4 grid-rows-5 gap-2 w-full flex-1 pl-4 pr-4 pt-4 pb-2 overflow-hidden">
         {currentWords.map((item) => {
           const itemKey = item.id + item.type
           const isMatched = matchedIds.has(item.id)
+          const isCorrect = correctKeys.has(itemKey)
           const isSelected = selectedCard === item
           const isError = errorKeys.has(itemKey)
 
@@ -235,18 +274,25 @@ export default function WordMatchPage({
             <div
               key={itemKey}
               onClick={() => handleCardClick(item)}
-              /* 🌟 核心改变 2：最外层包裹节点必须是 h-full，才能撑满 grid 分配的 $\frac{1}{3}$ 高度 */
-              className={`w-full h-full transition-all duration-200 
-          ${isMatched ? 'invisible opacity-0 pointer-events-none' : ''}
-          ${isError ? 'animate-shake' : ''}
-        `}
+              className={`w-full h-full transition-all duration-300 
+                ${isMatched ? 'invisible opacity-0 pointer-events-none scale-95' : 'opacity-100 scale-100'}
+                ${isError ? 'animate-shake' : ''}
+              `}
             >
               {item.type === 'text' ? (
-                /* 📝 单词卡片 - 彻底抛弃 h-28，改用 h-full 自动填充 */
+                /* 📝 单词卡片 */
                 <div
-                  className={`w-full h-full flex flex-col items-center justify-center border rounded-2xl p-3 shadow-sm active:scale-[0.98] transition-transform cursor-pointer select-none
-              ${isError ? 'border-danger bg-danger-50 text-danger' : isSelected ? 'border-warning bg-amber-50 text-warning scale-[1.02]' : 'border-default-100 bg-white text-neutral-800'}
-            `}
+                  className={`w-full h-full flex flex-col items-center justify-center border rounded-2xl p-3 shadow-sm active:scale-[0.98] transition-all cursor-pointer select-none
+                    ${
+                      isCorrect
+                        ? 'border-success bg-success-50 text-success scale-[1.02]'
+                        : isError
+                          ? 'border-danger bg-danger-50 text-danger'
+                          : isSelected
+                            ? 'border-warning bg-amber-50 text-warning scale-[1.02]'
+                            : 'border-default-100 bg-white text-neutral-800'
+                    }
+                  `}
                   onClick={() => {
                     playAudio(item.word.audio_url)
                   }}
@@ -256,11 +302,19 @@ export default function WordMatchPage({
                   </p>
                 </div>
               ) : (
-                /* 🖼️ 图片卡片 - 彻底抛弃 h-28，改用 h-full 自动填充 */
+                /* 🖼️ 图片卡片 */
                 <div
-                  className={`w-full h-full border flex items-center justify-center rounded-2xl p-2 shadow-sm active:scale-[0.98] transition-transform cursor-pointer select-none overflow-hidden
-              ${isError ? 'border-danger bg-danger-50' : isSelected ? 'border-warning bg-amber-50 scale-[1.02]' : 'border-default-100 bg-neutral-50'}
-            `}
+                  className={`w-full h-full border flex items-center justify-center rounded-2xl p-2 shadow-sm active:scale-[0.98] transition-all cursor-pointer select-none overflow-hidden
+                    ${
+                      isCorrect
+                        ? 'border-success bg-success-50 scale-[1.02]'
+                        : isError
+                          ? 'border-danger bg-danger-50'
+                          : isSelected
+                            ? 'border-warning bg-amber-50 scale-[1.02]'
+                            : 'border-default-100 bg-neutral-50'
+                    }
+                  `}
                 >
                   <img
                     src={item.word.image_url}
@@ -274,8 +328,9 @@ export default function WordMatchPage({
           )
         })}
       </div>
+
       {/* 底部固定导航栏 */}
-      <div className="mt-2 pt-1 pb-1 pl-4 pr-6 flex items-center justify-between shrink-0 border-t border-default-100  ">
+      <div className="mt-2 pt-1 pb-1 pl-4 pr-6 flex items-center justify-between shrink-0 border-t border-default-100">
         <div className="flex flex-1 items-center justify-start">
           <Button
             size="lg"
@@ -293,6 +348,7 @@ export default function WordMatchPage({
           {matchedIds.size} / {currentWords.length / 2}
         </span>
       </div>
+
       {/* 注入全局震动错落动画 */}
       <style jsx global>{`
         @keyframes shake {
