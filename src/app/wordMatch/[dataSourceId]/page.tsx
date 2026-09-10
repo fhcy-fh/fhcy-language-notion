@@ -584,7 +584,6 @@ export default function WordMatchPage({
             <div className="flex flex-col gap-3 w-full">
               <Button
                 size="lg"
-                color="primary"
                 className="w-full font-semibold shadow-md flex items-center justify-center gap-2"
                 onClick={() => void initGameData()}
               >
@@ -593,7 +592,6 @@ export default function WordMatchPage({
               </Button>
               <Button
                 size="lg"
-                variant="light"
                 className="w-full text-gray-500 font-medium"
                 onClick={() => {
                   setIsLoading(true)
