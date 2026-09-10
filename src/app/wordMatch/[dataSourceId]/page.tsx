@@ -362,7 +362,7 @@ export default function WordMatchPage({
       <div className="fixed inset-0 flex flex-col items-center justify-center bg-neutral-50 gap-3">
         <Spinner color="current" />
         <span className="text-sm text-neutral-400 font-medium select-none">
-          正在加载单词及语音...
+          Loading...
         </span>
       </div>
     )
