@@ -469,7 +469,7 @@ export default function LetterFillPage({
               </Button>
               <Button
                 size="lg"
-                className="w-full text-gray-500 font-medium"
+                className="w-full font-semibold shadow-md flex items-center justify-center gap-2"
                 onClick={() => {
                   setIsLoading(true)
                   router.push('/')

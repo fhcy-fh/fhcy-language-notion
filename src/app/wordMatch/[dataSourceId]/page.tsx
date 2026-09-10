@@ -16,8 +16,6 @@ interface WordMatchItem {
   word: WordType
 }
 
-const globalAudio = typeof window !== 'undefined' ? new Audio() : null
-
 export default function WordMatchPage({
   params,
 }: {
@@ -49,8 +47,8 @@ export default function WordMatchPage({
   // 🏆 游戏通关弹窗控制
   const [isGameCompleted, setIsGameCompleted] = useState(false)
 
-  // 🍎 iOS 音频对象池及解锁状态
-  const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  // 🍎 使用单例 Audio 实例解决移动端音轨实例数量受限问题
+  const globalAudioRef = useRef<HTMLAudioElement | null>(null)
   const playAudioIsActivated = useRef(false)
 
   // 数据包装器
@@ -69,7 +67,16 @@ export default function WordMatchPage({
     return [...textItems, ...imageItems].sort(() => Math.random() - 0.5)
   }
 
-  // 🌟 单个音频资源加载校验（带 4 秒超时防护）
+  // 初始化全局 Audio 单例
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !globalAudioRef.current) {
+      const audio = new Audio()
+      audio.preload = 'auto'
+      globalAudioRef.current = audio
+    }
+  }, [])
+
+  // 🌟 单个音频资源网络缓存预加载（只利用 Fetch API 写入浏览器 HTTP 缓存，不创建 Audio 实例）
   const loadSingleAudio = useCallback((url: string): Promise<void> => {
     return new Promise((resolve) => {
       if (!url) {
@@ -77,45 +84,19 @@ export default function WordMatchPage({
         return
       }
 
-      let audio = audioPoolRef.current.get(url)
-      if (!audio) {
-        audio = new Audio()
-        audio.preload = 'auto'
-        audio.src = url
-        audioPoolRef.current.set(url, audio)
-      }
-
-      if (audio.readyState >= 3) {
+      const timer = setTimeout(() => {
         resolve()
-        return
-      }
+      }, 3000)
 
-      let timer: NodeJS.Timeout | null = null
-
-      const cleanup = () => {
-        if (timer) clearTimeout(timer)
-        audio?.removeEventListener('canplaythrough', onCanPlay)
-        audio?.removeEventListener('error', onError)
-      }
-
-      const onCanPlay = () => {
-        cleanup()
-        resolve()
-      }
-
-      const onError = () => {
-        cleanup()
-        resolve()
-      }
-
-      audio.addEventListener('canplaythrough', onCanPlay)
-      audio.addEventListener('error', onError)
-      audio.load()
-
-      timer = setTimeout(() => {
-        cleanup()
-        resolve()
-      }, 4000)
+      fetch(url, { cache: 'force-cache' })
+        .then(() => {
+          clearTimeout(timer)
+          resolve()
+        })
+        .catch(() => {
+          clearTimeout(timer)
+          resolve()
+        })
     })
   }, [])
 
@@ -190,35 +171,31 @@ export default function WordMatchPage({
   )
 
   // 后续关卡音视频后台静默预加载
-  const preloadAudiosForIOS = useCallback((itemsList: WordMatchItem[][]) => {
-    if (typeof window === 'undefined') return
+  const preloadAudiosForIOS = useCallback(
+    (itemsList: WordMatchItem[][]) => {
+      if (typeof window === 'undefined') return
 
-    const flatItems = itemsList.flat()
+      const flatItems = itemsList.flat()
 
-    flatItems
-      .map((item) => item.word?.audio_url)
-      .filter((url): url is string => Boolean(url))
-      .forEach((url) => {
-        let audio = audioPoolRef.current.get(url)
-        if (!audio) {
-          audio = new Audio()
-          audio.preload = 'auto'
-          audio.src = url
-          audioPoolRef.current.set(url, audio)
-        }
-        if (playAudioIsActivated.current) {
-          audio.load()
-        }
-      })
+      // 静默缓存音频文件
+      flatItems
+        .map((item) => item.word?.audio_url)
+        .filter((url): url is string => Boolean(url))
+        .forEach((url) => {
+          void loadSingleAudio(url)
+        })
 
-    flatItems
-      .map((item) => item.word?.image_url)
-      .filter((url): url is string => Boolean(url))
-      .forEach((url) => {
-        const img = new Image()
-        img.src = url
-      })
-  }, [])
+      // 静默缓存图片
+      flatItems
+        .map((item) => item.word?.image_url)
+        .filter((url): url is string => Boolean(url))
+        .forEach((url) => {
+          const img = new Image()
+          img.src = url
+        })
+    },
+    [loadSingleAudio],
+  )
 
   // 从未使用的 ID 池中无重复地拉取一关数据
   const fetchNextBatchWords = useCallback(async (): Promise<
@@ -253,13 +230,14 @@ export default function WordMatchPage({
     preloadAudiosForIOS(wordQueueRef.current)
   }, [fetchNextBatchWords, preloadAudiosForIOS])
 
-  // 解锁 iOS 音频限制
+  // 解锁 iOS 音频限制（激活单例 Audio）
   useEffect(() => {
     const unlockIOSAudio = () => {
-      if (!playAudioIsActivated.current && globalAudio) {
-        globalAudio.src =
+      const audio = globalAudioRef.current
+      if (!playAudioIsActivated.current && audio) {
+        audio.src =
           'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA=='
-        globalAudio
+        audio
           .play()
           .then(() => {
             playAudioIsActivated.current = true
@@ -278,7 +256,7 @@ export default function WordMatchPage({
     }
   }, [preloadAudiosForIOS])
 
-  // 🌟 播放音频并返回 Promise
+  // 🌟 播放音频并返回 Promise（基于音频单例重设 src）
   const playAudioUntilEnd = useCallback((audio_url?: string): Promise<void> => {
     return new Promise((resolve) => {
       if (!audio_url) {
@@ -286,10 +264,8 @@ export default function WordMatchPage({
         return
       }
 
-      const cachedAudio = audioPoolRef.current.get(audio_url)
-      const targetAudio = cachedAudio || globalAudio
-
-      if (!targetAudio) {
+      const audio = globalAudioRef.current
+      if (!audio) {
         resolve()
         return
       }
@@ -298,8 +274,8 @@ export default function WordMatchPage({
 
       const cleanup = () => {
         if (timeoutTimer) clearTimeout(timeoutTimer)
-        targetAudio.removeEventListener('ended', onEnded)
-        targetAudio.removeEventListener('error', onError)
+        audio.removeEventListener('ended', onEnded)
+        audio.removeEventListener('error', onError)
       }
 
       const onEnded = () => {
@@ -312,34 +288,33 @@ export default function WordMatchPage({
         resolve()
       }
 
-      targetAudio.addEventListener('ended', onEnded)
-      targetAudio.addEventListener('error', onError)
+      audio.addEventListener('ended', onEnded)
+      audio.addEventListener('error', onError)
 
+      // 防卡死兜底（最多等待 3.5 秒）
       timeoutTimer = setTimeout(() => {
         cleanup()
         resolve()
       }, 3500)
 
-      if (cachedAudio) {
-        cachedAudio.currentTime = 0
-        cachedAudio.play().catch(() => {
-          if (globalAudio) {
-            globalAudio.src = audio_url
-            globalAudio.play().catch(() => {
-              cleanup()
-              resolve()
-            })
-          } else {
+      try {
+        audio.pause()
+        audio.currentTime = 0
+        audio.src = audio_url
+        audio.load()
+
+        const playPromise = audio.play()
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn('Audio play error fallback:', err)
             cleanup()
             resolve()
-          }
-        })
-      } else if (globalAudio) {
-        globalAudio.src = audio_url
-        globalAudio.play().catch(() => {
-          cleanup()
-          resolve()
-        })
+          })
+        }
+      } catch (err) {
+        console.warn('Audio execution catch:', err)
+        cleanup()
+        resolve()
       }
     })
   }, [])
@@ -592,7 +567,7 @@ export default function WordMatchPage({
               </Button>
               <Button
                 size="lg"
-                className="w-full text-gray-500 font-medium"
+                className="w-full font-semibold shadow-md flex items-center justify-center gap-2"
                 onClick={() => {
                   setIsLoading(true)
                   router.push('/')
