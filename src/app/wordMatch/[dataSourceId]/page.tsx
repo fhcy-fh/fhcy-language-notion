@@ -65,7 +65,7 @@ export default function WordMatchPage({
     return [...textItems, ...imageItems].sort(() => Math.random() - 0.5)
   }
 
-  // 🌟 单个音频资源完全加载校验（带超时兜底机制，防止网络卡死）
+  // 🌟 单个音频资源加载校验（带 4 秒超时防护）
   const loadSingleAudio = useCallback((url: string): Promise<void> => {
     return new Promise((resolve) => {
       if (!url) {
@@ -81,15 +81,18 @@ export default function WordMatchPage({
         audioPoolRef.current.set(url, audio)
       }
 
-      // 如果已经加载完成，直接返回
       if (audio.readyState >= 3) {
-        // HAVE_FUTURE_DATA 或 HAVE_ENOUGH_DATA
         resolve()
         return
       }
 
-      // eslint-disable-next-line prefer-const
-      let timer: NodeJS.Timeout
+      let timer: NodeJS.Timeout | null = null
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        audio?.removeEventListener('canplaythrough', onCanPlay)
+        audio?.removeEventListener('error', onError)
+      }
 
       const onCanPlay = () => {
         cleanup()
@@ -98,20 +101,13 @@ export default function WordMatchPage({
 
       const onError = () => {
         cleanup()
-        resolve() // 即使加载失败也继续，不卡死页面
-      }
-
-      const cleanup = () => {
-        clearTimeout(timer)
-        audio?.removeEventListener('canplaythrough', onCanPlay)
-        audio?.removeEventListener('error', onError)
+        resolve()
       }
 
       audio.addEventListener('canplaythrough', onCanPlay)
       audio.addEventListener('error', onError)
       audio.load()
 
-      // 设置 4 秒超时防护
       timer = setTimeout(() => {
         cleanup()
         resolve()
@@ -119,43 +115,110 @@ export default function WordMatchPage({
     })
   }, [])
 
-  // 🌟 确保给定卡片组中的所有音频都加载完毕
-  const preloadAndCheckAudios = useCallback(
+  // 🌟 单个图片资源加载校验（带 4 秒超时防护）
+  const loadSingleImage = useCallback((url: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (!url) {
+        resolve()
+        return
+      }
+
+      const img = new Image()
+      let timer: NodeJS.Timeout | null = null
+
+      const cleanup = () => {
+        if (timer) clearTimeout(timer)
+        img.onload = null
+        img.onerror = null
+      }
+
+      img.onload = () => {
+        cleanup()
+        resolve()
+      }
+
+      img.onerror = () => {
+        cleanup()
+        resolve()
+      }
+
+      img.src = url
+
+      // 如果浏览器已有本地缓存
+      if (img.complete) {
+        cleanup()
+        resolve()
+        return
+      }
+
+      timer = setTimeout(() => {
+        cleanup()
+        resolve()
+      }, 4000)
+    })
+  }, [])
+
+  // 🌟 确保卡片组中的所有音频和图片都预加载完毕
+  const preloadAndCheckAssets = useCallback(
     async (items: WordMatchItem[]) => {
       if (typeof window === 'undefined') return
 
-      const urls = items
-        .map((item) => item.word?.audio_url)
-        .filter((url): url is string => Boolean(url))
+      const audioUrls = Array.from(
+        new Set(
+          items
+            .map((item) => item.word?.audio_url)
+            .filter((url): url is string => Boolean(url)),
+        ),
+      )
 
-      // 去重后并行等待所有音频加载完毕
-      const uniqueUrls = Array.from(new Set(urls))
-      await Promise.all(uniqueUrls.map((url) => loadSingleAudio(url)))
+      const imageUrls = Array.from(
+        new Set(
+          items
+            .map((item) => item.word?.image_url)
+            .filter((url): url is string => Boolean(url)),
+        ),
+      )
+
+      // 并行等待所有音频和图片就绪
+      await Promise.all([
+        ...audioUrls.map((url) => loadSingleAudio(url)),
+        ...imageUrls.map((url) => loadSingleImage(url)),
+      ])
     },
-    [loadSingleAudio],
+    [loadSingleAudio, loadSingleImage],
   )
 
-  // 后续多关卡音频的后台静默预加载
+  // 后续关卡音视频后台静默预加载
   const preloadAudiosForIOS = useCallback((itemsList: WordMatchItem[][]) => {
     if (typeof window === 'undefined') return
 
-    const allUrls = itemsList
-      .flat()
+    const flatItems = itemsList.flat()
+
+    // 后台静默缓存音频
+    flatItems
       .map((item) => item.word?.audio_url)
       .filter((url): url is string => Boolean(url))
+      .forEach((url) => {
+        let audio = audioPoolRef.current.get(url)
+        if (!audio) {
+          audio = new Audio()
+          audio.preload = 'auto'
+          audio.src = url
+          audioPoolRef.current.set(url, audio)
+        }
+        if (playAudioIsActivated.current) {
+          audio.load()
+        }
+      })
 
-    allUrls.forEach((url) => {
-      let audio = audioPoolRef.current.get(url)
-      if (!audio) {
-        audio = new Audio()
-        audio.preload = 'auto'
-        audio.src = url
-        audioPoolRef.current.set(url, audio)
-      }
-      if (playAudioIsActivated.current) {
-        audio.load()
-      }
-    })
+    // 后台静默缓存图片
+    flatItems
+      .map((item) => item.word?.image_url)
+      .filter((url): url is string => Boolean(url))
+      .forEach((url) => {
+        const img = new Image()
+        img.src = url
+      })
   }, [])
 
   // 从 ID 池拉取一关的数据
@@ -256,13 +319,13 @@ export default function WordMatchPage({
           const firstBatch = await fetchBatchWords(fetchedIds)
           setCurrentWords(firstBatch)
 
-          // 2. 🌟 阻塞等待第 1 页的所有音频完全加载完成
-          await preloadAndCheckAudios(firstBatch)
+          // 2. 🌟 阻塞等待第 1 页的所有音频与图片全部加载完成
+          await preloadAndCheckAssets(firstBatch)
 
           // 3. 此时第一页图片+音频全就绪，关闭 Loading 渲染界面
           setIsLoading(false)
 
-          // 4. 在后台悄悄预加载后续第 2 页和第 3 页的数据及音频
+          // 4. 在后台悄悄预加载后续第 2 页和第 3 页的数据及音视频
           void fillPreloadQueue(fetchedIds)
         } else {
           setIsLoading(false)
@@ -273,7 +336,7 @@ export default function WordMatchPage({
       }
     }
     void initGameData()
-  }, [dataSourceId, fetchBatchWords, fillPreloadQueue, preloadAndCheckAudios])
+  }, [dataSourceId, fetchBatchWords, fillPreloadQueue, preloadAndCheckAssets])
 
   // 🖱️ 点击卡片处理逻辑
   const handleCardClick = (item: WordMatchItem) => {
