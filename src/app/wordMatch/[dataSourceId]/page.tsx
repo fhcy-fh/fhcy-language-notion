@@ -420,13 +420,13 @@ export default function WordMatchPage({
       setCorrectKeys(new Set([selectedKey, itemKey]))
       setSelectedCard(null)
 
-      // 异步执行：等待音频播放完毕 + 额外等待 500ms 后才消卡
+      // 异步执行：等待音频播放完毕 + 额外等待 300ms 后才消卡
       const handleCorrectMatch = async () => {
         // 播放当前匹配成功单词的音频
         await playAudioUntilEnd(item.word?.audio_url)
 
-        // 🌟 发音结束后再等待 500ms 消失
-        await new Promise((resolve) => setTimeout(resolve, 500))
+        // 🌟 发音结束后再等待 300ms 消失
+        await new Promise((resolve) => setTimeout(resolve, 300))
 
         setMatchedIds((prev) => {
           const newMatched = new Set(prev)
