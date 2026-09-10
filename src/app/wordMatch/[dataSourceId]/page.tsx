@@ -148,7 +148,6 @@ export default function WordMatchPage({
       if (img.complete) {
         cleanup()
         resolve()
-        return
       }
 
       timer = setTimeout(() => {
@@ -283,23 +282,71 @@ export default function WordMatchPage({
     }
   }, [preloadAudiosForIOS])
 
-  // 播放音频逻辑
-  const playAudio = useCallback((audio_url: string) => {
-    if (!audio_url) return
+  // 🌟 播放音频并返回 Promise，音频播放完毕（或触发异常兜底）后 resolve
+  const playAudioUntilEnd = useCallback((audio_url?: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (!audio_url) {
+        resolve()
+        return
+      }
 
-    const cachedAudio = audioPoolRef.current.get(audio_url)
-    if (cachedAudio) {
-      cachedAudio.currentTime = 0
-      cachedAudio.play().catch(() => {
-        if (globalAudio) {
-          globalAudio.src = audio_url
-          globalAudio.play().catch(() => {})
-        }
-      })
-    } else if (globalAudio) {
-      globalAudio.src = audio_url
-      globalAudio.play().catch(() => {})
-    }
+      const cachedAudio = audioPoolRef.current.get(audio_url)
+      const targetAudio = cachedAudio || globalAudio
+
+      if (!targetAudio) {
+        resolve()
+        return
+      }
+
+      let timeoutTimer: NodeJS.Timeout | null = null
+
+      const cleanup = () => {
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        targetAudio.removeEventListener('ended', onEnded)
+        targetAudio.removeEventListener('error', onError)
+      }
+
+      const onEnded = () => {
+        cleanup()
+        resolve()
+      }
+
+      const onError = () => {
+        cleanup()
+        resolve()
+      }
+
+      targetAudio.addEventListener('ended', onEnded)
+      targetAudio.addEventListener('error', onError)
+
+      // 防卡死兜底（最多等待 3.5 秒）
+      timeoutTimer = setTimeout(() => {
+        cleanup()
+        resolve()
+      }, 3500)
+
+      if (cachedAudio) {
+        cachedAudio.currentTime = 0
+        cachedAudio.play().catch(() => {
+          if (globalAudio) {
+            globalAudio.src = audio_url
+            globalAudio.play().catch(() => {
+              cleanup()
+              resolve()
+            })
+          } else {
+            cleanup()
+            resolve()
+          }
+        })
+      } else if (globalAudio) {
+        globalAudio.src = audio_url
+        globalAudio.play().catch(() => {
+          cleanup()
+          resolve()
+        })
+      }
+    })
   }, [])
 
   // 🚀 初始化游戏数据逻辑
@@ -340,11 +387,6 @@ export default function WordMatchPage({
 
   // 🖱️ 点击卡片处理逻辑
   const handleCardClick = (item: WordMatchItem) => {
-    // 仅当点击文字卡片时播放声音，点击图片卡片不发音
-    if (item.type === 'text' && item.word?.audio_url) {
-      playAudio(item.word.audio_url)
-    }
-
     const itemKey = item.id + item.type
 
     // 拦截不可点击状态
@@ -378,8 +420,14 @@ export default function WordMatchPage({
       setCorrectKeys(new Set([selectedKey, itemKey]))
       setSelectedCard(null)
 
-      // 延迟 450ms 让用户看清匹配效果后消除
-      setTimeout(() => {
+      // 异步执行：等待音频播放完毕 + 额外等待 500ms 后才消卡
+      const handleCorrectMatch = async () => {
+        // 播放当前匹配成功单词的音频
+        await playAudioUntilEnd(item.word?.audio_url)
+
+        // 🌟 发音结束后再等待 500ms 消失
+        await new Promise((resolve) => setTimeout(resolve, 500))
+
         setMatchedIds((prev) => {
           const newMatched = new Set(prev)
           newMatched.add(matchedId)
@@ -408,7 +456,9 @@ export default function WordMatchPage({
           newKeys.delete(itemKey)
           return newKeys
         })
-      }, 450)
+      }
+
+      void handleCorrectMatch()
     } else {
       // ❌ 配对失败
       setErrorKeys(new Set([selectedKey, itemKey]))
