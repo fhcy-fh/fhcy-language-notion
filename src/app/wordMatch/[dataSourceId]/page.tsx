@@ -425,8 +425,8 @@ export default function WordMatchPage({
         // 播放当前匹配成功单词的音频
         await playAudioUntilEnd(item.word?.audio_url)
 
-        // 🌟 发音结束后再等待 300ms 消失
-        await new Promise((resolve) => setTimeout(resolve, 300))
+        // 🌟 发音结束后再等待 100ms 消失
+        await new Promise((resolve) => setTimeout(resolve, 100))
 
         setMatchedIds((prev) => {
           const newMatched = new Set(prev)
