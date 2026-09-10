@@ -65,11 +65,80 @@ export default function WordMatchPage({
     return [...textItems, ...imageItems].sort(() => Math.random() - 0.5)
   }
 
-  // 🍎 预加载音频函数
+  // 🌟 单个音频资源完全加载校验（带超时兜底机制，防止网络卡死）
+  const loadSingleAudio = useCallback((url: string): Promise<void> => {
+    return new Promise((resolve) => {
+      if (!url) {
+        resolve()
+        return
+      }
+
+      let audio = audioPoolRef.current.get(url)
+      if (!audio) {
+        audio = new Audio()
+        audio.preload = 'auto'
+        audio.src = url
+        audioPoolRef.current.set(url, audio)
+      }
+
+      // 如果已经加载完成，直接返回
+      if (audio.readyState >= 3) {
+        // HAVE_FUTURE_DATA 或 HAVE_ENOUGH_DATA
+        resolve()
+        return
+      }
+
+      // eslint-disable-next-line prefer-const
+      let timer: NodeJS.Timeout
+
+      const onCanPlay = () => {
+        cleanup()
+        resolve()
+      }
+
+      const onError = () => {
+        cleanup()
+        resolve() // 即使加载失败也继续，不卡死页面
+      }
+
+      const cleanup = () => {
+        clearTimeout(timer)
+        audio?.removeEventListener('canplaythrough', onCanPlay)
+        audio?.removeEventListener('error', onError)
+      }
+
+      audio.addEventListener('canplaythrough', onCanPlay)
+      audio.addEventListener('error', onError)
+      audio.load()
+
+      // 设置 4 秒超时防护
+      timer = setTimeout(() => {
+        cleanup()
+        resolve()
+      }, 4000)
+    })
+  }, [])
+
+  // 🌟 确保给定卡片组中的所有音频都加载完毕
+  const preloadAndCheckAudios = useCallback(
+    async (items: WordMatchItem[]) => {
+      if (typeof window === 'undefined') return
+
+      const urls = items
+        .map((item) => item.word?.audio_url)
+        .filter((url): url is string => Boolean(url))
+
+      // 去重后并行等待所有音频加载完毕
+      const uniqueUrls = Array.from(new Set(urls))
+      await Promise.all(uniqueUrls.map((url) => loadSingleAudio(url)))
+    },
+    [loadSingleAudio],
+  )
+
+  // 后续多关卡音频的后台静默预加载
   const preloadAudiosForIOS = useCallback((itemsList: WordMatchItem[][]) => {
     if (typeof window === 'undefined') return
 
-    // 收集所有已缓存关卡中的音频 URL
     const allUrls = itemsList
       .flat()
       .map((item) => item.word?.audio_url)
@@ -83,7 +152,6 @@ export default function WordMatchPage({
         audio.src = url
         audioPoolRef.current.set(url, audio)
       }
-      // 在用户手势激发后调用 load() 解锁下载
       if (playAudioIsActivated.current) {
         audio.load()
       }
@@ -110,10 +178,10 @@ export default function WordMatchPage({
     [limitCount],
   )
 
-  // 🌟 补充预加载队列：确保队列里始终包含至少 2 关的数据（第 2 页与第 3 页）
+  // 补充预加载队列：保持预加载 2 关的数据（第 2 页与第 3 页）
   const fillPreloadQueue = useCallback(
     async (allIds: string[]) => {
-      const TARGET_QUEUE_SIZE = 2 // 保持预加载 2 关的数据
+      const TARGET_QUEUE_SIZE = 2
       while (wordQueueRef.current.length < TARGET_QUEUE_SIZE) {
         const batch = await fetchBatchWords(allIds)
         if (batch.length > 0) {
@@ -127,7 +195,7 @@ export default function WordMatchPage({
     [fetchBatchWords, preloadAudiosForIOS],
   )
 
-  // 🌟 监听页面手势，解锁 iOS 音频限制
+  // 监听页面手势，解锁 iOS 音频限制
   useEffect(() => {
     const unlockIOSAudio = () => {
       if (!playAudioIsActivated.current && globalAudio) {
@@ -171,7 +239,7 @@ export default function WordMatchPage({
     }
   }, [])
 
-  // 初始化游戏数据：填充当前关 + 后续多关缓存
+  // 🚀 初始化游戏数据逻辑
   useEffect(() => {
     const initGameData = async () => {
       try {
@@ -184,25 +252,32 @@ export default function WordMatchPage({
           const fetchedIds = res.data as string[]
           setIds(fetchedIds)
 
-          // 1. 先拉取当前第一关数据
-          const currentBatch = await fetchBatchWords(fetchedIds)
-          setCurrentWords(currentBatch)
+          // 1. 优先拉取当前第一关（第 1 页）数据
+          const firstBatch = await fetchBatchWords(fetchedIds)
+          setCurrentWords(firstBatch)
 
-          // 2. 异步并行预加载后续第 2 关和第 3 关数据
+          // 2. 🌟 阻塞等待第 1 页的所有音频完全加载完成
+          await preloadAndCheckAudios(firstBatch)
+
+          // 3. 此时第一页图片+音频全就绪，关闭 Loading 渲染界面
+          setIsLoading(false)
+
+          // 4. 在后台悄悄预加载后续第 2 页和第 3 页的数据及音频
           void fillPreloadQueue(fetchedIds)
+        } else {
+          setIsLoading(false)
         }
       } catch (error) {
         console.error('初始化游戏失败:', error)
-      } finally {
         setIsLoading(false)
       }
     }
     void initGameData()
-  }, [dataSourceId, fetchBatchWords, fillPreloadQueue])
+  }, [dataSourceId, fetchBatchWords, fillPreloadQueue, preloadAndCheckAudios])
 
   // 🖱️ 点击卡片处理逻辑
   const handleCardClick = (item: WordMatchItem) => {
-    // 🌟 修改点 1：仅当点击文字卡片时播放声音，点击图片卡片不发音
+    // 仅当点击文字卡片时播放声音，点击图片卡片不发音
     if (item.type === 'text' && item.word?.audio_url) {
       playAudio(item.word.audio_url)
     }
@@ -249,7 +324,7 @@ export default function WordMatchPage({
           // 检测本关卡片是否全部消除
           if (newMatched.size === currentWords.length / 2) {
             setTimeout(() => {
-              // 🌟 修改点 2：从预加载队列弹出下一关（第 2 页）数据
+              // 从预加载队列弹出下一关（第 2 页）数据
               const nextBatch = wordQueueRef.current.shift()
               if (nextBatch && nextBatch.length > 0) {
                 setCurrentWords(nextBatch)
@@ -284,8 +359,11 @@ export default function WordMatchPage({
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 flex items-center justify-center bg-neutral-50">
+      <div className="fixed inset-0 flex flex-col items-center justify-center bg-neutral-50 gap-3">
         <Spinner color="current" />
+        <span className="text-sm text-neutral-400 font-medium select-none">
+          正在加载单词及语音...
+        </span>
       </div>
     )
   }
