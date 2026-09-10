@@ -2,7 +2,7 @@
 
 import React, { use, useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Spinner } from '@heroui/react'
-import { House } from 'lucide-react'
+import { House, RotateCcw, Trophy } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { WordType } from '@/src/types/WordTypes'
 import {
@@ -31,12 +31,13 @@ export default function WordMatchPage({
   const isDesktop = typeof window !== 'undefined' && window.innerWidth >= 768
   const limitCount = isDesktop ? 10 : 5
 
-  const [ids, setIds] = useState<string[]>([])
+  // 剩余尚未抽取的 ID 池
+  const remainingIdsRef = useRef<string[]>([])
 
   // 🎮 核心数据状态
   const [currentWords, setCurrentWords] = useState<WordMatchItem[]>([])
 
-  // 📦 预加载缓存池：存储后面几关（第 2 关、第 3 关...）的卡片组数据
+  // 📦 预加载缓存池：存储后面几关的卡片组数据
   const wordQueueRef = useRef<WordMatchItem[][]>([])
 
   // 🎯 消除游戏互动状态
@@ -44,6 +45,9 @@ export default function WordMatchPage({
   const [matchedIds, setMatchedIds] = useState<Set<string>>(new Set())
   const [correctKeys, setCorrectKeys] = useState<Set<string>>(new Set())
   const [errorKeys, setErrorKeys] = useState<Set<string>>(new Set())
+
+  // 🏆 游戏通关弹窗控制
+  const [isGameCompleted, setIsGameCompleted] = useState(false)
 
   // 🍎 iOS 音频对象池及解锁状态
   const audioPoolRef = useRef<Map<string, HTMLAudioElement>>(new Map())
@@ -144,7 +148,6 @@ export default function WordMatchPage({
 
       img.src = url
 
-      // 如果浏览器已有本地缓存
       if (img.complete) {
         cleanup()
         resolve()
@@ -178,7 +181,6 @@ export default function WordMatchPage({
         ),
       )
 
-      // 并行等待所有音频和图片就绪
       await Promise.all([
         ...audioUrls.map((url) => loadSingleAudio(url)),
         ...imageUrls.map((url) => loadSingleImage(url)),
@@ -193,7 +195,6 @@ export default function WordMatchPage({
 
     const flatItems = itemsList.flat()
 
-    // 后台静默缓存音频
     flatItems
       .map((item) => item.word?.audio_url)
       .filter((url): url is string => Boolean(url))
@@ -210,7 +211,6 @@ export default function WordMatchPage({
         }
       })
 
-    // 后台静默缓存图片
     flatItems
       .map((item) => item.word?.image_url)
       .filter((url): url is string => Boolean(url))
@@ -220,44 +220,40 @@ export default function WordMatchPage({
       })
   }, [])
 
-  // 从 ID 池拉取一关的数据
-  const fetchBatchWords = useCallback(
-    async (allIds: string[]): Promise<WordMatchItem[]> => {
-      if (!allIds || allIds.length === 0) return []
-      const shuffled = [...allIds]
+  // 从未使用的 ID 池中无重复地拉取一关数据
+  const fetchNextBatchWords = useCallback(async (): Promise<
+    WordMatchItem[]
+  > => {
+    if (remainingIdsRef.current.length === 0) return []
 
-      for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-        ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
-      }
-      const nextIds = shuffled.slice(0, limitCount)
-      const res = await NotionWordGetByIdsClient(nextIds)
-      if (res.code === 200) {
-        return toWordMatchItem(res.data || [])
-      }
-      return []
-    },
-    [limitCount],
-  )
+    const nextIds = remainingIdsRef.current.splice(0, limitCount)
+    if (nextIds.length === 0) return []
 
-  // 补充预加载队列：保持预加载 2 关的数据（第 2 页与第 3 页）
-  const fillPreloadQueue = useCallback(
-    async (allIds: string[]) => {
-      const TARGET_QUEUE_SIZE = 2
-      while (wordQueueRef.current.length < TARGET_QUEUE_SIZE) {
-        const batch = await fetchBatchWords(allIds)
-        if (batch.length > 0) {
-          wordQueueRef.current.push(batch)
-        } else {
-          break
-        }
-      }
-      preloadAudiosForIOS(wordQueueRef.current)
-    },
-    [fetchBatchWords, preloadAudiosForIOS],
-  )
+    const res = await NotionWordGetByIdsClient(nextIds)
+    if (res.code === 200) {
+      return toWordMatchItem(res.data || [])
+    }
+    return []
+  }, [limitCount])
 
-  // 监听页面手势，解锁 iOS 音频限制
+  // 补充预加载队列：保持预加载 2 关的数据
+  const fillPreloadQueue = useCallback(async () => {
+    const TARGET_QUEUE_SIZE = 2
+    while (
+      wordQueueRef.current.length < TARGET_QUEUE_SIZE &&
+      remainingIdsRef.current.length > 0
+    ) {
+      const batch = await fetchNextBatchWords()
+      if (batch.length > 0) {
+        wordQueueRef.current.push(batch)
+      } else {
+        break
+      }
+    }
+    preloadAudiosForIOS(wordQueueRef.current)
+  }, [fetchNextBatchWords, preloadAudiosForIOS])
+
+  // 解锁 iOS 音频限制
   useEffect(() => {
     const unlockIOSAudio = () => {
       if (!playAudioIsActivated.current && globalAudio) {
@@ -282,7 +278,7 @@ export default function WordMatchPage({
     }
   }, [preloadAudiosForIOS])
 
-  // 🌟 播放音频并返回 Promise，音频播放完毕（或触发异常兜底）后 resolve
+  // 🌟 播放音频并返回 Promise
   const playAudioUntilEnd = useCallback((audio_url?: string): Promise<void> => {
     return new Promise((resolve) => {
       if (!audio_url) {
@@ -319,7 +315,6 @@ export default function WordMatchPage({
       targetAudio.addEventListener('ended', onEnded)
       targetAudio.addEventListener('error', onError)
 
-      // 防卡死兜底（最多等待 3.5 秒）
       timeoutTimer = setTimeout(() => {
         cleanup()
         resolve()
@@ -349,47 +344,57 @@ export default function WordMatchPage({
     })
   }, [])
 
-  // 🚀 初始化游戏数据逻辑
-  useEffect(() => {
-    const initGameData = async () => {
-      try {
-        setIsLoading(true)
-        setIds([])
-        wordQueueRef.current = []
+  // 🚀 初始化 / 重新开始游戏逻辑
+  const initGameData = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      setIsGameCompleted(false)
+      setSelectedCard(null)
+      setMatchedIds(new Set())
+      setCorrectKeys(new Set())
+      setErrorKeys(new Set())
+      wordQueueRef.current = []
 
-        const res = await NotionWordAllIdsByImgClient(dataSourceId)
-        if (res.code === 200) {
-          const fetchedIds = res.data as string[]
-          setIds(fetchedIds)
-
-          // 1. 优先拉取当前第一关（第 1 页）数据
-          const firstBatch = await fetchBatchWords(fetchedIds)
-          setCurrentWords(firstBatch)
-
-          // 2. 🌟 阻塞等待第 1 页的所有音频与图片全部加载完成
-          await preloadAndCheckAssets(firstBatch)
-
-          // 3. 此时第一页图片+音频全就绪，关闭 Loading 渲染界面
-          setIsLoading(false)
-
-          // 4. 在后台悄悄预加载后续第 2 页和第 3 页的数据及音视频
-          void fillPreloadQueue(fetchedIds)
-        } else {
-          setIsLoading(false)
+      const res = await NotionWordAllIdsByImgClient(dataSourceId)
+      if (res.code === 200 && Array.isArray(res.data)) {
+        const shuffled = [...(res.data as string[])]
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
         }
-      } catch (error) {
-        console.error('初始化游戏失败:', error)
+        remainingIdsRef.current = shuffled
+
+        const firstBatch = await fetchNextBatchWords()
+        setCurrentWords(firstBatch)
+
+        await preloadAndCheckAssets(firstBatch)
+
+        setIsLoading(false)
+
+        void fillPreloadQueue()
+      } else {
         setIsLoading(false)
       }
+    } catch (error) {
+      console.error('初始化游戏失败:', error)
+      setIsLoading(false)
     }
+  }, [
+    dataSourceId,
+    fetchNextBatchWords,
+    fillPreloadQueue,
+    preloadAndCheckAssets,
+  ])
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void initGameData()
-  }, [dataSourceId, fetchBatchWords, fillPreloadQueue, preloadAndCheckAssets])
+  }, [initGameData])
 
   // 🖱️ 点击卡片处理逻辑
   const handleCardClick = (item: WordMatchItem) => {
     const itemKey = item.id + item.type
 
-    // 拦截不可点击状态
     if (
       matchedIds.has(item.id) ||
       correctKeys.has(itemKey) ||
@@ -399,19 +404,16 @@ export default function WordMatchPage({
       return
     }
 
-    // 1. 未选中任何卡片
     if (!selectedCard) {
       setSelectedCard(item)
       return
     }
 
-    // 2. 连续点击相同类型的卡片（如连续点两个文字或两个图片）
     if (selectedCard.type === item.type) {
       setSelectedCard(item)
       return
     }
 
-    // 3. 开始匹配判定
     const selectedKey = selectedCard.id + selectedCard.type
 
     if (selectedCard.id === item.id) {
@@ -420,12 +422,8 @@ export default function WordMatchPage({
       setCorrectKeys(new Set([selectedKey, itemKey]))
       setSelectedCard(null)
 
-      // 异步执行：等待音频播放完毕 + 额外等待 300ms 后才消卡
       const handleCorrectMatch = async () => {
-        // 播放当前匹配成功单词的音频
         await playAudioUntilEnd(item.word?.audio_url)
-
-        // 🌟 发音结束后再等待 100ms 消失
         await new Promise((resolve) => setTimeout(resolve, 100))
 
         setMatchedIds((prev) => {
@@ -435,16 +433,16 @@ export default function WordMatchPage({
           // 检测本关卡片是否全部消除
           if (newMatched.size === currentWords.length / 2) {
             setTimeout(() => {
-              // 从预加载队列弹出下一关（第 2 页）数据
               const nextBatch = wordQueueRef.current.shift()
               if (nextBatch && nextBatch.length > 0) {
                 setCurrentWords(nextBatch)
+                setMatchedIds(new Set())
+                setSelectedCard(null)
+                void fillPreloadQueue()
+              } else {
+                // 🌟 没有下一关数据了，触发全通关弹窗
+                setIsGameCompleted(true)
               }
-              setMatchedIds(new Set())
-              setSelectedCard(null)
-
-              // 自动拉取后续关卡补充队列，维持 2 关储备
-              void fillPreloadQueue(ids)
             }, 200)
           }
           return newMatched
@@ -567,6 +565,47 @@ export default function WordMatchPage({
           {matchedIds.size} / {currentWords.length / 2}
         </span>
       </div>
+
+      {/* 🏆 完成提示自定义弹窗 */}
+      {isGameCompleted && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm animate-in fade-in duration-200 p-4">
+          <div className="bg-white rounded-3xl p-6 md:p-8 max-w-sm w-full text-center shadow-xl flex flex-col items-center">
+            <div className="w-16 h-16 bg-amber-100 text-amber-500 rounded-full flex items-center justify-center mb-4">
+              <Trophy className="w-8 h-8" />
+            </div>
+
+            <h3 className="text-2xl font-bold text-gray-800 mb-2">
+              Great Job! 🎉
+            </h3>
+            <p className="text-gray-500 text-sm mb-6">
+              Congratulations! You&apos;ve completed all the words!
+            </p>
+
+            <div className="flex flex-col gap-3 w-full">
+              <Button
+                size="lg"
+                color="primary"
+                className="w-full font-semibold shadow-md flex items-center justify-center gap-2"
+                onClick={() => void initGameData()}
+              >
+                <RotateCcw className="w-5 h-5" />
+                Let&apos;s Do It Again
+              </Button>
+              <Button
+                size="lg"
+                variant="light"
+                className="w-full text-gray-500 font-medium"
+                onClick={() => {
+                  setIsLoading(true)
+                  router.push('/')
+                }}
+              >
+                Back to Home
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 注入全局震动错落动画 */}
       <style jsx global>{`
